@@ -1,5 +1,6 @@
-import GnosisSafeSol     from '@gnosis.pm/safe-contracts/build/artifacts/contracts/GnosisSafe.sol/GnosisSafe.json'
-import SafeServiceClient from '@gnosis.pm/safe-service-client'
+import {calculateSafeTransactionHash} from '@gnosis.pm/safe-contracts'
+import GnosisSafeSol                  from '@gnosis.pm/safe-contracts/build/artifacts/contracts/GnosisSafe.sol/GnosisSafe.json'
+import SafeServiceClient              from '@gnosis.pm/safe-service-client'
 
 import {ChainId, Fetcher, Route, Token, TokenAmount}             from "@uniswap/sdk"
 import IUniswapV2ERC20                                           from "@uniswap/v2-core/build/IUniswapV2ERC20.json";
@@ -13,9 +14,9 @@ import useForm                                                   from "hooks/use
 import {useRouter}                                               from 'next/router'
 import React, {useEffect, useMemo, useRef, useState}             from "react"
 import {useDaoStore}                                             from "stores/useDaoStore"
-import {useSigner}                                               from 'wagmi'
-import {generateSafeTxHash, getEIP712Signature, saveTxToHistory} from './helpers'
-import PoolInfo                                                  from './PoolInfo'
+import {useSigner}                                                from 'wagmi'
+import {calculateSafeTxHash, getEIP712Signature, saveTxToHistory} from './helpers'
+import PoolInfo                                                   from './PoolInfo'
 import TokenInput                                                from './TokenInput'
 
 
@@ -61,6 +62,8 @@ const UniswapLpModal = ({safeAddress, tokenLogos}) => {
 
             /* last transaction made by bbyDAO */
             const transactions = await safeService.getAllTransactions(bbyDaoSafe)
+            const nonce = await safeService.getNextNonce(bbyDaoSafe)
+            console.log('transactions', nonce)
 
             /* Pre-validated Gnosis signature */
             // https://docs.gnosis-safe.io/contracts/signatures
@@ -87,17 +90,16 @@ const UniswapLpModal = ({safeAddress, tokenLogos}) => {
 
             /*  construct gnosis transaction object  */
             let txHash
-            const txArgs = {
+            const safeTx = {
                 safeInstance: bbyDaoSafeInstance,
-                safeAddress: bbyDaoSafe,
                 to: pair?.liquidityToken?.address,
                 valueInWei: (liquidityInfo?.transactionInfo?.[0]?.amountInWei.add(liquidityInfo?.transactionInfo?.[1]?.amountInWei))?._hex,
                 data: addLiquidityFnData,
                 operation: CALL,
-                nonce: transactions.count + 1,
+                nonce: nonce,
                 safeTxGas: 0,
                 baseGas: 0,
-                gasPrice: '0',
+                gasPrice: 0,
                 gasToken: ZERO_ADDRESS,
                 refundReceiver: ZERO_ADDRESS,
                 sender: signer._address,
@@ -106,10 +108,31 @@ const UniswapLpModal = ({safeAddress, tokenLogos}) => {
 
 
             /*  generate transaction hash  */
-            const safeTxHash = generateSafeTxHash(safeAddress, {...txArgs, value: txArgs.valueInWei})
+            const safeTxHash = calculateSafeTxHash(safeAddress, {...safeTx, value: safeTx.valueInWei})
 
-            if (!!txArgs.data && !!txArgs.valueInWei) {
+            console.log('HASH', calculateSafeTransactionHash(bbyDaoSafeInstance, {
+                to: pair?.liquidityToken?.address,
+                value: BigNumber.from((liquidityInfo?.transactionInfo?.[0]?.amountInWei.add(liquidityInfo?.transactionInfo?.[1]?.amountInWei))?._hex),
+                data: addLiquidityFnData,
+                operation: CALL,
+                safeTxGas: 0,
+                baseGas: 0,
+                gasPrice: 0,
+                gasToken: ZERO_ADDRESS,
+                refundReceiver: ZERO_ADDRESS,
+                nonce: transactions.count + 1
+            }, signer.provider._network.chainId))
+
+
+
+
+
+
+
+            if (!!safeTx.data && !!safeTx.valueInWei) {
                 const threshold = await bbyDaoSafeInstance?.getThreshold()
+                console.log('sig', signature)
+                console.log('safeTx', safeTx)
 
                 if (threshold.toNumber() > 1) {
                     /*  Reject or ask for approvals */
@@ -118,9 +141,16 @@ const UniswapLpModal = ({safeAddress, tokenLogos}) => {
                     if (!!safeTxHash) {
 
                         try {
-                            const signature = await getEIP712Signature(safeTxHash, txArgs, signer)
+                            const signature = await getEIP712Signature(safeTx, safeAddress, signer, bbyDaoSafeInstance)
+
+                            console.log('signature', signature)
                             if (signature) {
-                                const tx = await saveTxToHistory({...txArgs, signature})
+                                const tx = await saveTxToHistory({...safeTx, safeTxHash, signature})
+                                //
+                                if (tx === 201) {
+                                   // const execute = bbyDaoSafeInstance?.executeTransaction({...safeTx})
+                                    console.log('created')
+                                }
                                 console.log('tx', tx)
                             }
                         } catch (err) {
